@@ -1,0 +1,22 @@
+# Example terraform.tfvars file
+# Copy this file to terraform.tfvars and customize the values
+
+# Name of your existing personal resource group
+resource_group_name = "personal"
+
+# Azure region where resources will be created
+location = "Australia East"
+
+# Project name (used as prefix for resources)
+project_name = "presidio"
+
+# App Service Plan SKU (B1, S1, P1v2, etc.)
+app_service_plan_sku = "F1"
+
+# Tags for all resources
+tags = {
+  Environment = "development"
+  Project     = "presidio"
+  Owner       = "personal"
+  CreatedBy   = "terraform"
+}

@@ -1,0 +1,33 @@
+name: Deploy Azure Function App
+
+on:
+  push:
+    branches: [ main ]
+    paths: [ 'app/function_app/**' ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+    
+    - name: Install Azure Functions Core Tools
+      run: npm install -g azure-functions-core-tools@4 --unsafe-perm true
+    
+    - name: Install dependencies
+      run: |
+        cd app/function_app
+        pip install -r requirements.txt
+    
+    - name: Deploy to Azure Functions
+      run: |
+        cd app/function_app
+        func azure functionapp publish presidio-func
+      env:
+        AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
