@@ -50,22 +50,7 @@ func azure functionapp publish $FUNCTION_APP_NAME --python
 
 if [ $? -eq 0 ]; then
     echo "✅ Deployment completed successfully!"
-    
-    # # Run post-deployment commands
-    # echo "📦 Running post-deployment setup..."
-    # echo "🔧 Installing spaCy English model..."
-    # az functionapp deployment source config-local-git \
-    #     --resource-group $RESOURCE_GROUP_NAME \
-    #     --name $FUNCTION_APP_NAME \
-    #     --query url -o tsv > /dev/null 2>&1 || true
-    
-    # # Use Azure CLI to run the spaCy download command
-    # az functionapp ssh \
-    #     --resource-group $RESOURCE_GROUP_NAME \
-    #     --name $FUNCTION_APP_NAME \
-    #     --command "python -m spacy download en_core_web_sm" 2>/dev/null || \
-    # echo "⚠️ Could not run post-deployment command via SSH. Model will be downloaded on first run."
-    
+       
     # Wait a moment for functions to initialize
     echo "⏳ Waiting for functions to initialize..."
     sleep 10
