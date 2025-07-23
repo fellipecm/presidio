@@ -21,29 +21,6 @@ from presidio_analyzer import AnalyzerEngine
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
-# Initialize spaCy model on startup
-# def ensure_spacy_model():
-#     """Ensure spaCy English model is available."""
-#     try:
-#         import spacy
-#         try:
-#             spacy.load('en_core_web_sm')
-#             logger.info("✅ spaCy English model already available")
-#         except OSError:
-#             logger.info("📦 Downloading spaCy English model...")
-#             subprocess.check_call([sys.executable, "-m", "spacy", "download", "en_core_web_sm"])
-#             logger.info("✅ spaCy English model downloaded successfully")
-#     except Exception as e:
-#         logger.warning(f"⚠️ Could not ensure spaCy model: {str(e)}")
-
-# # Ensure spaCy model is available on startup
-# try:
-#     ensure_spacy_model()
-# except Exception as e:
-#     logger.warning(f"⚠️ spaCy model initialization failed: {str(e)}")
-
-
-
 # Initialize Azure Functions app
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 
@@ -58,16 +35,6 @@ def health(req: func.HttpRequest) -> func.HttpResponse:
         }),
         status_code=200,
         mimetype="application/json"
-    )
-
-@app.blob_trigger(
-    arg_name="client", path="data/{name}", connection="AzureWebJobsStorage"
-)
-def blob_trigger(client: blob.BlobClient):
-    logging.info(
-        f"Python blob trigger function processed blob \n"
-        f"Properties: {client.get_blob_properties()}\n"
-        f"Blob content head: {client.download_blob().read(size=1)}"
     )
 
 @app.function_name("http_trigger_pii_analysis_simple")
@@ -104,56 +71,193 @@ def http_trigger_pii_analysis(req: func.HttpRequest) -> func.HttpResponse:
             mimetype="application/json"
         )
     
+@app.function_name(name="BlobTrigger1")
+@app.blob_trigger(arg_name="myblob", 
+                  path="data/{name}",
+                  connection="AzureWebJobsStorage")
+def test_function(myblob: func.InputStream):
+   logging.info(f"c \n"
+                f"Name: {myblob.name}\n"
+                f"Blob Size: {myblob.length} bytes")
+   
+   blob_name = myblob.name.split('/')[-1]
+   container_name = myblob.name.split('/')[0]
 
-# @app.blob_trigger(arg_name="myblob", path="data/{name}", connection="AzureWebJobsStorage")
-# def blob_trigger(myblob: blob.BlobClient):
+   logger.info(f"🔍 Starting PII analysis for: {blob_name}")
+
+   # Analyze the blob for PII using simple detection
+   analysis_result = analyze_blob_for_pii_presidio(blob_name, container_name)
+
+   logging.info(
+       json.dumps({
+           "message": f"Manual analysis completed for {blob_name}",
+           "result": analysis_result
+           }, indent=2) 
+    )
+   
+def get_storage_connection_string():
+    """Get storage connection string from environment variables."""
+    return os.environ.get('AzureWebJobsStorage')
+
+
+def analyze_blob_for_pii_presidio(blob_name: str, container_name: str = "data") -> Dict[str, Any]:
+    """
+    Analyze a specific blob for PII content using Presidio.
+    
+    Args:
+        blob_name: Name of the blob to analyze
+        container_name: Name of the container (default: "data")
+        
+    Returns:
+        Dictionary with PII analysis results
+    """
+    try:
+        connection_string = get_storage_connection_string()
+        if not connection_string:
+            raise ValueError("Storage connection string not found")
+        
+        # Initialize blob service client
+        blob_service_client = BlobServiceClient.from_connection_string(connection_string)
+        
+        # Check if file type is supported
+        supported_extensions = ['.txt', '.csv', '.json', '.log', '.md']
+        file_extension = os.path.splitext(blob_name.lower())[1]
+        
+        if file_extension not in supported_extensions:
+            logger.info(f"Skipping unsupported file type: {blob_name}")
+            return {
+                "blob_name": blob_name,
+                "status": "skipped",
+                "reason": "unsupported_file_type",
+                "supported_types": supported_extensions
+            }
+        
+        # Download blob content
+        blob_client = blob_service_client.get_blob_client(container=container_name, blob=blob_name)
+        blob_data = blob_client.download_blob()
+        content = blob_data.readall().decode('utf-8', errors='ignore')
+        
+        if not content.strip():
+            logger.info(f"Empty file, skipping: {blob_name}")
+            return {
+                "blob_name": blob_name,
+                "status": "skipped",
+                "reason": "empty_file"
+            }
+        
+        # Use Presidio AnalyzerEngine
+        analyzer = AnalyzerEngine()
+        results = analyzer.analyze(text=content, entities=None, language="en")
+        pii_entities = [
+            {
+                'entity_type': r.entity_type,
+                'start': r.start,
+                'end': r.end,
+                'score': r.score,
+                'text': content[r.start:r.end]
+            } for r in results
+        ]
+        
+        # Get blob properties
+        blob_properties = blob_client.get_blob_properties()
+        
+        analysis_result = {
+            "blob_name": blob_name,
+            "container_name": container_name,
+            "status": "completed",
+            "analysis_timestamp": datetime.utcnow().isoformat(),
+            "file_size": blob_properties.size,
+            "pii_entities_found": len(pii_entities),
+            "pii_entities": pii_entities,
+            "content_length": len(content),
+            "detection_method": "presidio"
+        }
+        
+        logger.info(f"PII analysis completed for {blob_name}: found {len(pii_entities)} entities")
+        return analysis_result
+        
+    except Exception as e:
+        logger.error(f"Error analyzing blob {blob_name}: {str(e)}")
+        return {
+            "blob_name": blob_name,
+            "status": "error",
+            "error": str(e),
+            "analysis_timestamp": datetime.utcnow().isoformat()
+        }
+
+# @app.blob_trigger(
+#     arg_name="client", path="data/{name}", connection="AzureWebJobsStorage"
+# )
+# def blob_trigger(client: blob.BlobClient):
+#     logging.debug(f"Python blob trigger function processed blob")
+#     logging.debug(f"Properties: {client.get_blob_properties()}")
+    # logging.debug(f"Blob name: {client.name}")
+    # logging.debug(f"Blob container name: {client.container_name}")
+    # logging.debug(f"Blob length: {client.length} bytes")
+    # logging.debug(f"Blob type: {client.blob_type}")
+
+    # Manually run the analysis
+    # analysis_result = analyze_blob_for_pii_presidio(client.name, "data")
+    
+    
+    # logger.info(
+    #     json.dumps({
+    #         "message": f"Blob trigger analysis completed for {client.name}",
+    #         "result": analysis_result
+    #     }, indent=2),
+    #     status_code=200,
+    #     mimetype="application/json"
+    # )
+
+# @app.blob_trigger(arg_name="client", path="data/{name}", connection="AzureWebJobsStorage")
+# def blob_trigger(client: blob.BlobClient):
 #     """Azure Function triggered when a blob is created or updated."""
 #     trigger_start_time = datetime()
-#     try:
-#         # Enhanced logging for troubleshooting
-#         logger.info(f"🔥 BLOB TRIGGER FIRED at {trigger_start_time.isoformat()}")
-#         logger.info(f"📁 Raw blob path: {myblob.name}")
-#         logger.info(f"📏 Blob length: {myblob.length} bytes")
-#         logger.info(f"🔗 Connection string configured: {'Yes' if get_storage_connection_string() else 'No'}")
+    # try:
+        # Enhanced logging for troubleshooting
+    # logger.info(f"🔥 BLOB TRIGGER FIRED at {trigger_start_time.isoformat()}")
+    # logger.info(f"📁 Raw blob path: {client.name}")
+    # logger.info(f"📏 Blob length: {client.length} bytes")
+    # logger.info(f"🔗 Connection string configured: {'Yes' if get_storage_connection_string() else 'No'}")
+    
+    # blob_name = client.name.split('/')[-1]
+    # container_name = "data"
+    
+    # logger.info(f"📋 Extracted blob name: '{blob_name}'")
+    # logger.info(f"📦 Container name: '{container_name}'")
         
-#         blob_name = myblob.name.split('/')[-1]
-#         container_name = "data"
+    # # Check if blob name is valid
+    # if not blob_name or blob_name.strip() == '':
+    #     logger.error("❌ Invalid blob name extracted from path")
+    #     return
+    
+    # # Check blob size
+    # if client.length == 0:
+    #     logger.warning(f"⚠️ Empty blob detected: {blob_name}")
         
-#         logger.info(f"📋 Extracted blob name: '{blob_name}'")
-#         logger.info(f"📦 Container name: '{container_name}'")
+        # Test storage connection before processing
+        # try:
+        #     connection_string = get_storage_connection_string()
+        #     if connection_string:
+        #         logger.info("✅ Storage connection string found")
+        #         # Test the connection
+        #         blob_service_client = BlobServiceClient.from_connection_string(connection_string)
+        #         # Try to get account info to verify connection
+        #         account_info = blob_service_client.get_account_information()
+        #         logger.info(f"✅ Storage connection verified. Account type: {account_info.get('account_kind', 'unknown')}")
+        #     else:
+        #         logger.error("❌ No storage connection string found")
+        #         return
+        # except Exception as conn_e:
+        #     logger.error(f"❌ Storage connection test failed: {str(conn_e)}")
+        #     return
         
-#         # Check if blob name is valid
-#         if not blob_name or blob_name.strip() == '':
-#             logger.error("❌ Invalid blob name extracted from path")
-#             return
+        # logger.info(f"🔍 Starting PII analysis for: {blob_name}")
         
-#         # Check blob size
-#         if myblob.length == 0:
-#             logger.warning(f"⚠️ Empty blob detected: {blob_name}")
+        # Analyze the blob for PII using simple detection
+        # analysis_result = analyze_blob_for_pii_presidio(blob_name, container_name)
         
-#         # Test storage connection before processing
-#         try:
-#             connection_string = get_storage_connection_string()
-#             if connection_string:
-#                 logger.info("✅ Storage connection string found")
-#                 # Test the connection
-#                 blob_service_client = BlobServiceClient.from_connection_string(connection_string)
-#                 # Try to get account info to verify connection
-#                 account_info = blob_service_client.get_account_information()
-#                 logger.info(f"✅ Storage connection verified. Account type: {account_info.get('account_kind', 'unknown')}")
-#             else:
-#                 logger.error("❌ No storage connection string found")
-#                 return
-#         except Exception as conn_e:
-#             logger.error(f"❌ Storage connection test failed: {str(conn_e)}")
-#             return
-        
-#         logger.info(f"🔍 Starting PII analysis for: {blob_name}")
-        
-#         # Analyze the blob for PII using simple detection
-#         analysis_result = analyze_blob_for_pii_presidio(blob_name, container_name)
-        
-#         logger.info(f"📊 Analysis result status: {analysis_result.get('status')}")
+        # logger.info(f"📊 Analysis result status: {analysis_result.get('status')}")
         
 #         # Send results to queue
 #         logger.info(f"📤 Sending results to queue...")
@@ -170,29 +274,29 @@ def http_trigger_pii_analysis(req: func.HttpRequest) -> func.HttpResponse:
 #         else:
 #             logger.error(f"❌ Analysis failed for {blob_name}: {analysis_result.get('error')}")
         
-#     except Exception as e:
-#         processing_time = (datetime.utcnow() - trigger_start_time).total_seconds()
-#         logger.error(f"💥 CRITICAL ERROR in blob trigger function after {processing_time:.2f}s: {str(e)}")
-#         logger.error(f"📍 Error type: {type(e).__name__}")
+    # except Exception as e:
+    #     processing_time = (datetime() - trigger_start_time).total_seconds()
+    #     logger.error(f"💥 CRITICAL ERROR in blob trigger function after {processing_time:.2f}s: {str(e)}")
+    #     logger.error(f"📍 Error type: {type(e).__name__}")
         
-#         # Try to send error to queue for monitoring
-#         try:
-#             error_result = {
-#                 "blob_name": getattr(myblob, 'name', 'unknown').split('/')[-1],
-#                 "status": "error",
-#                 "error": str(e),
-#                 "error_type": type(e).__name__,
-#                 "analysis_timestamp": datetime.utcnow().isoformat(),
-#                 "trigger_duration_seconds": processing_time
-#             }
-#             send_to_results_queue(error_result)
-#             logger.info("📤 Error details sent to results queue")
-#         except Exception as queue_error:
-#             logger.error(f"❌ Failed to send error to queue: {str(queue_error)}")
+        # Try to send error to queue for monitoring
+        # try:
+        #     error_result = {
+        #         "blob_name": getattr(client, 'name', 'unknown').split('/')[-1],
+        #         "status": "error",
+        #         "error": str(e),
+        #         "error_type": type(e).__name__,
+        #         "analysis_timestamp": datetime.utcnow().isoformat(),
+        #         "trigger_duration_seconds": processing_time
+        #     }
+        #     send_to_results_queue(error_result)
+        #     logger.info("📤 Error details sent to results queue")
+        # except Exception as queue_error:
+        #     logger.error(f"❌ Failed to send error to queue: {str(queue_error)}")
     
-#     finally:
-#         total_time = (datetime.utcnow() - trigger_start_time).total_seconds()
-#         logger.info(f"🏁 Blob trigger completed in {total_time:.2f} seconds")
+    # finally:
+    #     total_time = (datetime() - trigger_start_time).total_seconds()
+    #     logger.info(f"🏁 Blob trigger completed in {total_time:.2f} seconds")
 
 # @app.function_name("diagnostics")
 # @app.route(route="diagnostics", auth_level=func.AuthLevel.ANONYMOUS)
@@ -400,96 +504,3 @@ def http_trigger_pii_analysis(req: func.HttpRequest) -> func.HttpResponse:
         
 #     except Exception as e:
 #         logger.error(f"Error sending to results queue: {str(e)}")
-
-
-def get_storage_connection_string():
-    """Get storage connection string from environment variables."""
-    return os.environ.get('AzureWebJobsStorage')
-
-
-def analyze_blob_for_pii_presidio(blob_name: str, container_name: str = "data") -> Dict[str, Any]:
-    """
-    Analyze a specific blob for PII content using Presidio.
-    
-    Args:
-        blob_name: Name of the blob to analyze
-        container_name: Name of the container (default: "data")
-        
-    Returns:
-        Dictionary with PII analysis results
-    """
-    try:
-        connection_string = get_storage_connection_string()
-        if not connection_string:
-            raise ValueError("Storage connection string not found")
-        
-        # Initialize blob service client
-        blob_service_client = BlobServiceClient.from_connection_string(connection_string)
-        
-        # Check if file type is supported
-        supported_extensions = ['.txt', '.csv', '.json', '.log', '.md']
-        file_extension = os.path.splitext(blob_name.lower())[1]
-        
-        if file_extension not in supported_extensions:
-            logger.info(f"Skipping unsupported file type: {blob_name}")
-            return {
-                "blob_name": blob_name,
-                "status": "skipped",
-                "reason": "unsupported_file_type",
-                "supported_types": supported_extensions
-            }
-        
-        # Download blob content
-        blob_client = blob_service_client.get_blob_client(container=container_name, blob=blob_name)
-        blob_data = blob_client.download_blob()
-        content = blob_data.readall().decode('utf-8', errors='ignore')
-        
-        if not content.strip():
-            logger.info(f"Empty file, skipping: {blob_name}")
-            return {
-                "blob_name": blob_name,
-                "status": "skipped",
-                "reason": "empty_file"
-            }
-        
-        # Use Presidio AnalyzerEngine
-        analyzer = AnalyzerEngine()
-        results = analyzer.analyze(text=content, entities=None, language="en")
-        pii_entities = [
-            {
-                'entity_type': r.entity_type,
-                'start': r.start,
-                'end': r.end,
-                'score': r.score,
-                'text': content[r.start:r.end]
-            } for r in results
-        ]
-        
-        # Get blob properties
-        blob_properties = blob_client.get_blob_properties()
-        
-        analysis_result = {
-            "blob_name": blob_name,
-            "container_name": container_name,
-            "status": "completed",
-            "analysis_timestamp": datetime.utcnow().isoformat(),
-            "file_size": blob_properties.size,
-            "pii_entities_found": len(pii_entities),
-            "pii_entities": pii_entities,
-            "content_length": len(content),
-            "detection_method": "presidio"
-        }
-        
-        logger.info(f"PII analysis completed for {blob_name}: found {len(pii_entities)} entities")
-        return analysis_result
-        
-    except Exception as e:
-        logger.error(f"Error analyzing blob {blob_name}: {str(e)}")
-        return {
-            "blob_name": blob_name,
-            "status": "error",
-            "error": str(e),
-            "analysis_timestamp": datetime.utcnow().isoformat()
-        }
-
-
